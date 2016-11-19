@@ -62,6 +62,9 @@ class CountdownI_Class < AppIndicator::AppIndicator
 
 	# Read the configuration file if it's present and readable (if it isn't present creates the default one)
 	def read_config()
+		#Checks if configuration file exists and if it's readable. If it doesn't exist, write one with default
+		#values. If it does exist but isn't readable, leave it there and use default values. Else, just use the
+		#values from the file.
 		if(File.exists?(File.realpath("./Config")+"/CountdownI.config"))
 			debug("Config file exists!")
 			if(File.readable?(File.realpath("./Config/CountdownI.config")))
@@ -108,7 +111,7 @@ class CountdownI_Class < AppIndicator::AppIndicator
 			config_file.close
 		end
 
-		# Check the values and use default if anything is odd:
+		# Check the values and use default ones if anything is odd:
 		if(@notify_delay < 60 || @notify_delay > 1200)
 			@notify_delay = 300
 		end
@@ -152,6 +155,7 @@ class CountdownI_Class < AppIndicator::AppIndicator
 					
 					restore_file.close
 				else
+					#This error shouldn't happen if the user didn't play around with chmod/chown...
 					puts("[ERROR]: You don't have permissions to read the restore file...")
 					exit(1)
 				end
@@ -183,6 +187,7 @@ class CountdownI_Class < AppIndicator::AppIndicator
 				
 				restore_file.close
 			else
+				#This error shouldn't happen if the user didn't play around with chmod/chown...
 				puts("[ERROR]: You don't have permissions to write to the restore file...")
 				exit(1)
 			end
@@ -197,8 +202,31 @@ class CountdownI_Class < AppIndicator::AppIndicator
 		end
 	end
 	
+	def remove_restore_file()
+		debug("Removing restore file:")
+		if(File.exists?(File.realpath("./")+"/countdown.restore"))
+			debug("Restore file is present")
+			if(File.writable?(File.realpath("./")+"/countdown.restore"))
+				debug("Restore file is writable, so probably deletable too")
+				debug("Deleting restore file...")
+				
+				File.delete(File.realpath("./countdown.restore"))
+			else
+				#This error shouldn't happen if the user didn't play around with chmod/chown...
+				puts("[ERROR]: You don't have write permissions to the restore file...")
+				exit(1)
+			end
+		else
+			debug("Restore file is not present. Not deleting anything")
+		end
+	end
+	
 	def update_timer()
 		@countdown_timer = @target_timer - Time.new.to_i
+		
+		if(@countdown_timer < 0)
+			@countdown_timer = 0
+		end
 		
 		if(@countdown_timer > BLUE_ICON_RANGE)
 			self.set_icon(@indicator_icons[1])
@@ -216,8 +244,10 @@ end
 
 Gtk.init()
 
+#Create the indicator object
 CountdownI = CountdownI_Class.new("CountdownI", File.realpath("./Icons/IconBlack.png"), AppIndicator::Category::APPLICATION_STATUS)
 
+#Read the configuration file and set the parameters
 CountdownI.read_config()
 
 debug("VALUES: ")
@@ -228,8 +258,10 @@ debug('Persistent timer: '+CountdownI.instance_variable_get("@persistent_timer")
 
 debug("Setting timer:")
 
+#Set the timer
 CountdownI.set_timer()
 
+#Timeout function that will update the indicator
 GLib::Timeout.add(1000){
 	CountdownI.update_timer()
 	
@@ -239,3 +271,8 @@ GLib::Timeout.add(1000){
 }
 
 Gtk.main()
+
+#If the timer is up, we are in the persistent mode and there is a restore file, remove it...
+if(CountdownI.instance_variable_get("@persistent_timer") && CountdownI.instance_variable_get("@countdown_timer")<=0)
+	CountdownI.remove_restore_file()
+end
