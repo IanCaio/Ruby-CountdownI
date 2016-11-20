@@ -285,6 +285,28 @@ class CountdownI_Class < AppIndicator::AppIndicator
 				true
 			}
 		
+			#Timeout function that will issue the 'notify-send' commands
+			if(@enable_notify)
+				GLib::Timeout.add(@notify_delay*1000){
+					debug("Notify timeout!")
+					
+					if(@countdown_timer > BLUE_ICON_RANGE)
+						Kernel::system("notify-send --icon='"+@indicator_icons[1]+"' 'CountdownI: "+@countdown_timer.to_s+" seconds left!'")
+					elsif(@countdown_timer > ORANGE_ICON_RANGE)
+						Kernel::system("notify-send --icon='"+@indicator_icons[2]+"' 'CountdownI: "+@countdown_timer.to_s+" seconds left!'")
+					elsif(@countdown_timer > 0)
+						Kernel::system("notify-send --icon='"+@indicator_icons[3]+"' 'CountdownI: "+@countdown_timer.to_s+" seconds left!'")
+					end
+					
+					#I don't think we can use "return" here... Maybe because it's not a function, but a block of code?
+					if(@countdown_timer <= 0)
+						false
+					else
+						true
+					end
+				}
+			end
+			
 			@is_running = true
 			
 			start_window.destroy()
