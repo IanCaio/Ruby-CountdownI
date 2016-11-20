@@ -28,6 +28,8 @@ class CountdownI_Class < AppIndicator::AppIndicator
 
 	@indicator_icons	#Array with the different paths to the icons the indicator will use
 	
+	@is_running = false	#Did we start the timer?
+	
 	# Initialization (Set the indicator and the default variables values)
 	def initialize(name, icon, category)
 		super
@@ -42,13 +44,25 @@ class CountdownI_Class < AppIndicator::AppIndicator
 		
 		mainmenu = Gtk::Menu.new
 		
+		#Start the timer
+		mainmenu_start = Gtk::MenuItem.new("Start timer...")
+		mainmenu_start.signal_connect("activate"){
+			#We parse the mainmenu_start menu item as an argument because if we start the counter
+			#we need to disable this item.
+			self.start_timer(mainmenu_start)
+		}
+		
+		mainmenu.append(mainmenu_start)
+		mainmenu_start.show()
+		
+		#Quit
 		mainmenu_quit = Gtk::MenuItem.new("Quit")
 		mainmenu_quit.signal_connect("activate"){
-			Gtk.main_quit
+			self.quit_timer()
 		}
 
 		mainmenu.append(mainmenu_quit)
-		mainmenu_quit.show
+		mainmenu_quit.show()
 
 		set_menu(mainmenu)
 		set_status(AppIndicator::Status::ACTIVE)
@@ -238,6 +252,63 @@ class CountdownI_Class < AppIndicator::AppIndicator
 			self.set_icon(@indicator_icons[0])
 		end
 	end
+	
+	def start_timer(caller_menuitem)
+		#We will display a window where the user can set the timer
+		#or choose to get the parameters from the config file.
+		
+		start_window = Gtk::Window.new()
+		start_window.set_border_width(10)
+		
+		start_from_config_btn = Gtk::Button.new("Get from config file")
+		start_from_config_btn.signal_connect("clicked"){
+			#Read the configuration file and set the parameters
+			self.read_config()
+
+			debug("VALUES: ")
+			debug('Enable notify: '+@enable_notify.to_s)
+			debug('Notify delay: '+@notify_delay.to_s)
+			debug('Initial timer: '+@countdown_timer.to_s)
+			debug('Persistent timer: '+@persistent_timer.to_s)
+
+			debug("Setting timer:")
+
+			#Set the timer
+			self.set_timer()
+
+			#Timeout function that will update the indicator
+			GLib::Timeout.add(1000){
+				self.update_timer()
+	
+				self.set_label("Time left: "+@countdown_timer.to_s+" seconds", "CountdownI")
+	
+				true
+			}
+		
+			@is_running = true
+			
+			start_window.destroy()
+			
+			#The menuitem from the indicator is now inactive
+			caller_menuitem.set_sensitive(false)
+		}
+		
+		start_window.add(start_from_config_btn)
+		
+		start_window.show_all
+	end
+	
+	def quit_timer()
+		#If we didn't start the timer yet, we don't need to bother with the restore file
+		if(@is_running == true)
+			#If the time is up, we are in the persistent mode and there is a restore file, remove it...
+			if(CountdownI.instance_variable_get("@persistent_timer") && CountdownI.instance_variable_get("@countdown_timer")<=0)
+				CountdownI.remove_restore_file()
+			end
+		end
+		
+		Gtk.main_quit()
+	end
 end
 
 # Program flow
@@ -247,32 +318,4 @@ Gtk.init()
 #Create the indicator object
 CountdownI = CountdownI_Class.new("CountdownI", File.realpath("./Icons/IconBlack.png"), AppIndicator::Category::APPLICATION_STATUS)
 
-#Read the configuration file and set the parameters
-CountdownI.read_config()
-
-debug("VALUES: ")
-debug('Enable notify: '+CountdownI.instance_variable_get("@enable_notify").to_s)
-debug('Notify delay: '+CountdownI.instance_variable_get("@notify_delay").to_s)
-debug('Initial timer: '+CountdownI.instance_variable_get("@countdown_timer").to_s)
-debug('Persistent timer: '+CountdownI.instance_variable_get("@persistent_timer").to_s)
-
-debug("Setting timer:")
-
-#Set the timer
-CountdownI.set_timer()
-
-#Timeout function that will update the indicator
-GLib::Timeout.add(1000){
-	CountdownI.update_timer()
-	
-	CountdownI.set_label("Time left: "+CountdownI.instance_variable_get("@countdown_timer").to_s+" seconds", "CountdownI")
-	
-	true
-}
-
 Gtk.main()
-
-#If the timer is up, we are in the persistent mode and there is a restore file, remove it...
-if(CountdownI.instance_variable_get("@persistent_timer") && CountdownI.instance_variable_get("@countdown_timer")<=0)
-	CountdownI.remove_restore_file()
-end
