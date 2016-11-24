@@ -2,342 +2,352 @@
 
 require 'ruby-libappindicator'
 
-# DEBUG FUNCTION
-DEBUG=true
+# Small debugging function
+DEBUG = true
 def debug(message)
-	if DEBUG==true
-		puts "DEBUG: "+message
-	end
+  if DEBUG == true
+    puts 'DEBUG: ' + message
+  end
 end
 
-# SOME CONSTANTS
-BLUE_ICON_RANGE = 600		#10 minutes
-ORANGE_ICON_RANGE = 300		#5 minutes
-# So here is how it goes: Timer > 10 minutes icon is blue. 10 minutes > Timer > 5 minutes icon is orange. Timer < 5 minutes
-# icon is red. Timer is 0 icon is black.
+# CLASSES DESIGN
+#
+# Classes:
+#   1) Indicator Class
+#     Will hold all the methods and attributes regarding the indicator
+#     itself and the submenus from the indicator.
+#   2) Configuration Class
+#     Will contain methods to open and parse the configuration file, and
+#     also save the current configurations to it.
+#     Will contain methods and attributes regarding the settings from the
+#     countdown app.
+#   3) Timer Class
+#     Will contain the attributes and methods that will be responsable
+#     for keeping track of the countdown timer.
 
-# MAIN CLASS
-class CountdownI_Class < AppIndicator::AppIndicator
-	# Class variables
-	@notify_delay		#Delay between the timer notifications
-	@enable_notify		#Enable notifications?
-	@persistent_timer	#Should the timer be persistent between calls? (Keeping track of the same timer every time you launch)
+class Indicator < AppIndicator::AppIndicator
+  # There are 4 icon colors: Blue, Orange, Red and Black.
+  # | BLUE |{RANGE1}| ORANGE  |{RANGE2}| RED  |{0}| BLACK
+  # Icon will be blue when the time left is over RANGE1, orange when
+  # the time left is between RANGE1 and RANGE2, red when the time left
+  # is between RANGE2 and 0 and black when the time is up.
+  ICON_RANGE1 = 600
+  ICON_RANGE2 = 300
 
-	@target_timer		#The epoch time where the timer will be over
-	@countdown_timer	#The seconds remaining
-
-	@indicator_icons	#Array with the different paths to the icons the indicator will use
-	
-	@is_running = false	#Did we start the timer?
-	
-	# Initialization (Set the indicator and the default variables values)
-	def initialize(name, icon, category)
-		super
-
-		#Gtk + AppIndicator Setup
-		#Getting icons paths
-		@indicator_icons = []
-		@indicator_icons[0] = File.realpath("./Icons/IconBlack.png")
-		@indicator_icons[1] = File.realpath("./Icons/IconBlue.png")
-		@indicator_icons[2] = File.realpath("./Icons/IconOrange.png")
-		@indicator_icons[3] = File.realpath("./Icons/IconRed.png")
-		
-		mainmenu = Gtk::Menu.new
-		
-		#Start the timer
-		mainmenu_start = Gtk::MenuItem.new("Start timer...")
-		mainmenu_start.signal_connect("activate"){
-			#We parse the mainmenu_start menu item as an argument because if we start the counter
-			#we need to disable this item.
-			self.start_timer(mainmenu_start)
-		}
-		
-		mainmenu.append(mainmenu_start)
-		mainmenu_start.show()
-		
-		#Quit
-		mainmenu_quit = Gtk::MenuItem.new("Quit")
-		mainmenu_quit.signal_connect("activate"){
-			self.quit_timer()
-		}
-
-		mainmenu.append(mainmenu_quit)
-		mainmenu_quit.show()
-
-		set_menu(mainmenu)
-		set_status(AppIndicator::Status::ACTIVE)
-
-		#Default variables values
-		@notify_delay=300
-		@enable_notify=false
-		@countdown_timer=30
-		@persistent_timer=false
-	end
-
-	# Read the configuration file if it's present and readable (if it isn't present creates the default one)
-	def read_config()
-		#Checks if configuration file exists and if it's readable. If it doesn't exist, write one with default
-		#values. If it does exist but isn't readable, leave it there and use default values. Else, just use the
-		#values from the file.
-		if(File.exists?(File.realpath("./Config")+"/CountdownI.config"))
-			debug("Config file exists!")
-			if(File.readable?(File.realpath("./Config/CountdownI.config")))
-				debug("Config file is readable!")
-				debug("Reading:")
-				config_file = File.open(File.realpath("./Config/CountdownI.config"),"r")
-
-				while(line = config_file.gets)
-					if(!line.start_with?("//") && line.chomp.length>0)
-						param_value_list = line.split("=")
-						debug("Parameter: #{param_value_list[0]} - Value: #{param_value_list[1]}")
-						
-						case param_value_list[0]
-							when "NOTIFY DELAY"
-								@notify_delay=param_value_list[1].to_i
-							when "ENABLE NOTIFY"
-								if(param_value_list[1].chomp == "TRUE")
-									@enable_notify=true
-								else
-									@enable_notify=false
-								end
-							when "INITIAL TIMER"
-								@countdown_timer=param_value_list[1].to_i
-							when "PERSISTENT TIMER"
-								if(param_value_list[1].chomp == "TRUE")
-									@persistent_timer=true
-								else
-									@persistent_timer=false
-								end
-						end
-					end
-				end
-				config_file.close
-			else
-				debug("Config file not readable. Using default values...")
-			end
-		else
-			debug("Config file not present. Writing the default one...")
-			config_file = File.open(File.realpath("./Config")+"/CountdownI.config","w")
-
-			# Write default configuration file
-			config_file.write("//The configuration file is simple:\n//NOTIFY DELAY=<number> being number in the range 60-1200 seconds\n//ENABLE NOTIFY=TRUE/FALSE anything other than that means false.\n//INITIAL TIMER=<number> the initial countdown timer\n//PERSISTENT TIMER=TRUE/FALSE anything other than that means false.\n\nNOTIFY DELAY=300\nENABLE NOTIFY=FALSE\nINITIAL TIMER=30\nPERSISTENT TIMER=FALSE\n")
-			
-			config_file.close
-		end
-
-		# Check the values and use default ones if anything is odd:
-		if(@notify_delay < 60 || @notify_delay > 1200)
-			@notify_delay = 300
-		end
-		if(@countdown_timer <= 0)
-			@countdown_timer = 30
-		end
-	end
-
-	def set_timer()
-		debug("Current epoch time = "+Time.new.strftime("%s"))
-		
-		# If the timer is not persistent, just calculate the target timer from the current epoch time
-		if(@persistent_timer == false)
-			debug("Persistent timer is Off!")
-			
-			@target_timer = Time.new.to_i + @countdown_timer
-			
-			debug("Countdown timer = "+@countdown_timer.to_s)
-			debug("Target timer = "+@target_timer.to_s)
-		else
-		# If the timer is persistent, we check the target timer from the restore file if it exists or create one if it doesn't
-			debug("Persistent timer is On!")
-			debug("Restore file path: "+File.realpath("./")+"/countdown.restore")
-			
-			# File is there, we just restore the target timer
-			if(File.exists?(File.realpath("./")+"/countdown.restore"))
-				debug("Restore file is present")
-				if(File.readable?(File.realpath("./")+"/countdown.restore"))
-					debug("Restore file is readable")
-					
-					restore_file = File.open(File.realpath("./countdown.restore"),"r")
-					
-					while(line = restore_file.gets)
-						@target_timer = line.to_i
-					end
-					
-					@countdown_timer = @target_timer - Time.new.to_i
-					
-					debug("Target timer from restore file = "+@target_timer.to_s)
-					debug("Countdown timer = "+@countdown_timer.to_s)
-					
-					restore_file.close
-				else
-					#This error shouldn't happen if the user didn't play around with chmod/chown...
-					puts("[ERROR]: You don't have permissions to read the restore file...")
-					exit(1)
-				end
-			else
-			# File isn't there, we should create it
-				debug("Restore file not present!")
-				
-				@target_timer = Time.new.to_i + @countdown_timer
-			
-				debug("Countdown timer = "+@countdown_timer.to_s)
-				debug("Target timer = "+@target_timer.to_s)
-				
-				# Effectively writes the restore file
-				self.write_restore_file
-			end
-		end
-	end
-	
-	def write_restore_file()
-		debug("Writing restore file:")
-		if(File.exists?(File.realpath("./")+"/countdown.restore"))
-			debug("Restore file exists already")
-			if(File.writable?(File.realpath("./")+"/countdown.restore"))
-				debug("Restore file is writable")
-				
-				restore_file = File.open(File.realpath("./countdown.restore"),"w")
-				
-				restore_file.write(@target_timer.to_s)
-				
-				restore_file.close
-			else
-				#This error shouldn't happen if the user didn't play around with chmod/chown...
-				puts("[ERROR]: You don't have permissions to write to the restore file...")
-				exit(1)
-			end
-		else
-			debug("Restore file doesn't exist. Writing it...")
-			
-			restore_file = File.open(File.realpath("./")+"/countdown.restore","w")
-			
-			restore_file.write(@target_timer.to_s)
-			
-			restore_file.close
-		end
-	end
-	
-	def remove_restore_file()
-		debug("Removing restore file:")
-		if(File.exists?(File.realpath("./")+"/countdown.restore"))
-			debug("Restore file is present")
-			if(File.writable?(File.realpath("./")+"/countdown.restore"))
-				debug("Restore file is writable, so probably deletable too")
-				debug("Deleting restore file...")
-				
-				File.delete(File.realpath("./countdown.restore"))
-			else
-				#This error shouldn't happen if the user didn't play around with chmod/chown...
-				puts("[ERROR]: You don't have write permissions to the restore file...")
-				exit(1)
-			end
-		else
-			debug("Restore file is not present. Not deleting anything")
-		end
-	end
-	
-	def update_timer()
-		@countdown_timer = @target_timer - Time.new.to_i
-		
-		if(@countdown_timer < 0)
-			@countdown_timer = 0
-		end
-		
-		if(@countdown_timer > BLUE_ICON_RANGE)
-			self.set_icon(@indicator_icons[1])
-		elsif(@countdown_timer > ORANGE_ICON_RANGE)
-			self.set_icon(@indicator_icons[2])
-		elsif(@countdown_timer > 0)
-			self.set_icon(@indicator_icons[3])
-		else
-			self.set_icon(@indicator_icons[0])
-		end
-	end
-	
-	def start_timer(caller_menuitem)
-		#We will display a window where the user can set the timer
-		#or choose to get the parameters from the config file.
-		
-		start_window = Gtk::Window.new()
-		start_window.set_border_width(10)
-		
-		start_from_config_btn = Gtk::Button.new("Get from config file")
-		start_from_config_btn.signal_connect("clicked"){
-			#Read the configuration file and set the parameters
-			self.read_config()
-
-			debug("VALUES: ")
-			debug('Enable notify: '+@enable_notify.to_s)
-			debug('Notify delay: '+@notify_delay.to_s)
-			debug('Initial timer: '+@countdown_timer.to_s)
-			debug('Persistent timer: '+@persistent_timer.to_s)
-
-			debug("Setting timer:")
-
-			#Set the timer
-			self.set_timer()
-
-			#Timeout function that will update the indicator
-			GLib::Timeout.add(1000){
-				self.update_timer()
-	
-				self.set_label("Time left: "+@countdown_timer.to_s+" seconds", "CountdownI")
-	
-				true
-			}
-		
-			#Timeout function that will issue the 'notify-send' commands
-			if(@enable_notify)
-				GLib::Timeout.add(@notify_delay*1000){
-					debug("Notify timeout!")
-					
-					if(@countdown_timer > BLUE_ICON_RANGE)
-						Kernel::system("notify-send --icon='"+@indicator_icons[1]+"' 'CountdownI: "+@countdown_timer.to_s+" seconds left!'")
-					elsif(@countdown_timer > ORANGE_ICON_RANGE)
-						Kernel::system("notify-send --icon='"+@indicator_icons[2]+"' 'CountdownI: "+@countdown_timer.to_s+" seconds left!'")
-					elsif(@countdown_timer > 0)
-						Kernel::system("notify-send --icon='"+@indicator_icons[3]+"' 'CountdownI: "+@countdown_timer.to_s+" seconds left!'")
-					end
-					
-					#I don't think we can use "return" here... Maybe because it's not a function, but a block of code?
-					if(@countdown_timer <= 0)
-						false
-					else
-						true
-					end
-				}
-			end
-			
-			@is_running = true
-			
-			start_window.destroy()
-			
-			#The menuitem from the indicator is now inactive
-			caller_menuitem.set_sensitive(false)
-		}
-		
-		start_window.add(start_from_config_btn)
-		
-		start_window.show_all
-	end
-	
-	def quit_timer()
-		#If we didn't start the timer yet, we don't need to bother with the restore file
-		if(@is_running == true)
-			#If the time is up, we are in the persistent mode and there is a restore file, remove it...
-			if(CountdownI.instance_variable_get("@persistent_timer") && CountdownI.instance_variable_get("@countdown_timer")<=0)
-				CountdownI.remove_restore_file()
-			end
-		end
-		
-		Gtk.main_quit()
-	end
+  def initialize(name, icon, category)
+    # Original AppIndicator initialization
+    super
+    
+    # Initialization of variables
+    # Create a configuration object
+    @config = Configuration.new
+    
+    # Create a timer object
+    @timer = Timer.new(@config)
+    
+    # Bulk setup
+    setup
+  end
+  
+  def setup
+    # Read the configuration file and set values
+    @config.read
+    
+    # Set the timer object
+    @timer.set
+    
+    # Set the indicator itself
+    set_indicator
+    
+    # Set the timeout function
+    GLib::Timeout.add(1000){
+      update
+    }
+    
+    if @config.notify?
+      GLib::Timeout.add(@config.notifydelay*1000){
+        send_notify
+      }
+    end
+  end
+  
+  # Set the AppIndicator with a "Quit" button
+  def set_indicator    
+    indicatormenu = Gtk::Menu.new
+    
+    indicatormenu_quit = Gtk::MenuItem.new("Quit")
+    indicatormenu_quit.signal_connect("activate"){
+      quit_timer
+    }
+    indicatormenu.append(indicatormenu_quit)
+    indicatormenu_quit.show
+    
+    set_menu(indicatormenu)
+    set_status(AppIndicator::Status::ACTIVE)
+  end
+  
+  # Will return the real path of each Icon to an array on first call.
+  # On all subsequent calls it will return the array contents.
+  def self.indicator_icons
+    @indicator_icons ||= [
+        File.realpath("./Icons/IconBlack.png"),
+        File.realpath("./Icons/IconBlue.png"),
+        File.realpath("./Icons/IconOrange.png"),
+        File.realpath("./Icons/IconRed.png")
+    ]
+  end
+  
+  def send_notify
+    if @timer.timeleft > ICON_RANGE1
+      Kernel::system("notify-send --icon='"+Indicator.indicator_icons[1]+"' 'CountdownI: "+@timer.timeleft.to_s+" seconds left!'")
+    elsif @timer.timeleft > ICON_RANGE2
+      Kernel::system("notify-send --icon='"+Indicator.indicator_icons[2]+"' 'CountdownI: "+@timer.timeleft.to_s+" seconds left!'")
+    elsif @timer.timeleft > 0
+      Kernel::system("notify-send --icon='"+Indicator.indicator_icons[3]+"' 'CountdownI: "+@timer.timeleft.to_s+" seconds left!'")
+    end
+    
+    if @timer.timeleft > 0
+      true
+    else
+      false
+    end
+  end
+  
+  def update
+    @timer.update
+    
+    if @timer.timeleft > ICON_RANGE1
+      set_icon(Indicator.indicator_icons[1])
+    elsif @timer.timeleft > ICON_RANGE2
+      set_icon(Indicator.indicator_icons[2])
+    elsif @timer.timeleft > 0
+      set_icon(Indicator.indicator_icons[3])
+    else
+      set_icon(Indicator.indicator_icons[0])
+    end
+    
+    set_label('Time left: ' + @timer.timeleft.to_s + ' seconds', 'CountdownI')
+    
+    if @timer.timeleft > 0
+      true
+    else
+      Kernel::system("notify-send --icon='"+Indicator.indicator_icons[0]+"' 'CountdownI: Time is up!'")
+      false
+    end
+  end
+  
+  def quit_timer
+    if @config.persistent?
+      if @timer.timeleft <= 0
+        @timer.remove_restore_file
+      end
+    end
+    
+    Gtk::main_quit
+  end
 end
 
-# Program flow
+class Configuration
+  @enablenotify
+  @persistenttimer
+  
+  attr_reader :initialtimer
+  attr_reader :notifydelay
+  
+  def initialize
+    debug("Initializing Config")
+  end
+  
+  def notify?
+    @enablenotify
+  end
+  
+  def persistent?
+    @persistenttimer
+  end
+  
+  # Set the default values
+  def set_default
+    @enablenotify = true
+    @persistenttimer = false
+    @initialtimer = 30
+    @notifydelay = 300
+  end
+  
+  # Check the values
+  def check_values
+    # Check the values and use default ones if anything is odd:
+    if(@notifydelay < 60 || @notifydelay > 1200)
+      @notifydelay = 300
+    end
+    if @initialtimer <= 0
+      @initialtimer = 30
+    end
+  end
+  
+  # Read the configuration files and set the variables accordingly
+  def read
+    debug("Reading Configuration File!")
+    #Checks if configuration file exists and if it's readable. If it doesn't exist, write one with default
+    #values. If it does exist but isn't readable, leave it there and use default values. Else, just use the
+    #values from the file.
+	if(File.exists?(File.realpath("./Config")+"/CountdownI.config") && File.readable?(File.realpath("./Config/CountdownI.config")))
+      debug("Config file exists and is readable!")
+      debug("Reading:")
+      config_file = File.open(File.realpath("./Config/CountdownI.config"),"r")
 
-Gtk.init()
+      while line = config_file.gets
+        if(!line.start_with?("//") && line.chomp.length>0)
+          param_value_list = line.split("=")
+          debug("Parameter: #{param_value_list[0]} - Value: #{param_value_list[1]}")
 
-#Create the indicator object
-CountdownI = CountdownI_Class.new("CountdownI", File.realpath("./Icons/IconBlack.png"), AppIndicator::Category::APPLICATION_STATUS)
+          case param_value_list[0]
+            when "NOTIFY DELAY"
+              @notifydelay = param_value_list[1].to_i
+            when "ENABLE NOTIFY"
+              if(param_value_list[1].chomp == "TRUE")
+                @enablenotify = true
+              else
+                @enablenotify = false
+              end
+            when "INITIAL TIMER"
+              @initialtimer = param_value_list[1].to_i
+            when "PERSISTENT TIMER"
+              if(param_value_list[1].chomp == "TRUE")
+                @persistenttimer = true
+              else
+                @persistenttimer = false
+              end
+          end
+        end
+      end
+      
+      config_file.close
+      
+      # Check the values and use default ones if anything is odd
+      check_values
+    else
+      debug("Can't read configuration file. Using default values...")
+      
+      # Set default values
+      set_default
+    end
+  end
+end
 
-Gtk.main()
+class Timer  
+  attr_accessor :targettimer
+  attr_accessor :timeleft
+  
+  def initialize(config)
+    debug('Initializing Timer')
+    @config = config
+  end
+  
+  def set
+    debug('Current epoch time: = '+Time.new.strftime('%s'))
+    
+    # If timer is persistent, look for file
+    if @config.persistent?
+      debug('Persistent timer is On')
+      
+      if File.exists?(File.realpath('./')+'/countdown.restore')
+        if File.readable?(File.realpath('./')+'/countdown.restore')
+          debug('Restoring timer from restore file')
+          
+          restore_file = File.open(File.realpath('./countdown.restore'), 'r')
+          
+          while line = restore_file.gets
+            @targettimer = line.to_i
+          end
+          
+          @timeleft = @targettimer - Time.new.to_i
+          
+          debug('Target timer: ' + @targettimer.to_s)
+          debug('Time left: ' + @timeleft.to_s)
+          
+          restore_file.close
+        else
+          puts "[ERROR]: You don't have the permissions to read the restore file..."
+          exit(1)
+        end
+      else
+        debug('Restore file not present')
+        
+        @targettimer = Time.new.to_i + @config.initialtimer
+        @timeleft = @config.initialtimer
+        
+        write_restore_file
+      end
+    else
+      debug('Persistent timer is off')
+
+      @targettimer = Time.new.to_i + @config.initialtimer
+      @timeleft = @config.initialtimer
+    end
+  end
+  
+  def write_restore_file
+    debug('Writing restore file:')
+    
+    if File.exists?(File.realpath('./')+'/countdown.restore')
+      debug('Restore file exists already')
+      if File.writable?(File.realpath('./')+'/countdown.restore')
+        debug('Restore file is writable')
+
+        restore_file = File.open(File.realpath('./countdown.restore'), 'w')
+
+        restore_file.write(@targettimer.to_s)
+
+        restore_file.close
+      else
+        #This error shouldn't happen if the user didn't play around with chmod/chown...
+        puts "[ERROR]: You don't have permissions to write to the restore file..."
+        exit 1
+      end
+    else
+      debug("Restore file doesn't exist. Writing it...")
+
+      restore_file = File.open(File.realpath('./')+'/countdown.restore', 'w')
+
+      restore_file.write(@targettimer.to_s)
+
+      restore_file.close
+    end
+  end
+  
+  def remove_restore_file
+    debug("Removing restore file:")
+    if File.exists?(File.realpath("./")+"/countdown.restore")
+      debug("Restore file is present")
+      if File.writable?(File.realpath("./")+"/countdown.restore")
+        debug("Restore file is writable, so probably deletable too")
+        debug("Deleting restore file...")
+
+        File.delete(File.realpath("./countdown.restore"))
+      else
+        #This error shouldn't happen if the user didn't play around with chmod/chown...
+        puts "[ERROR]: You don't have write permissions to the restore file..."
+        exit 1
+      end
+    else
+      debug("Restore file is not present. Not deleting anything")
+    end
+  end
+  
+  def update
+    @timeleft = @targettimer - Time.new.to_i
+    
+    if @timeleft < 0
+      @timeleft = 0
+    end
+  end
+end
+
+# MAIN FLOW
+
+Gtk.init
+
+CountdownI = Indicator.new("CountdownI", Indicator.indicator_icons[0], AppIndicator::Category::APPLICATION_STATUS)
+
+Gtk.main
